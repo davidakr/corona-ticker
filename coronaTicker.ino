@@ -3,6 +3,8 @@
 #include <WiFiClientSecure.h>
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266HTTPClient.h>
+#include <WiFiClientSecureBearSSL.h>
+
 
 // EasyESP or NodeMCU Pin D8 to DIN, D7 to Clk, D6 to LOAD, no.of devices is 1
 LedControl lc=LedControl(D8,D7,D6,1);
@@ -11,40 +13,47 @@ ESP8266WiFiMulti WiFiMulti;
 const char* ssid     = "ssid";
 const char* password = "password";
 const char* host = "worldometers.info";
+const uint8_t fingerprint[20] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
 
 void setup()
 {
   Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+  WiFiMulti.addAP(ssid, password);
+  delay(1000);
 
-  for (uint8_t t = 4; t > 0; t--) {
-    Serial.printf("[SETUP] WAIT %d...\n", t);
-    Serial.flush();
-    delay(1000);
+  Serial.println();
+  Serial.print("[Setup] Connecting");
+  while (WiFiMulti.run() != WL_CONNECTED)
+  {
+    delay(500);
   }
 
-  WiFi.mode(WIFI_STA);
-  WiFiMulti.addAP("ssid", "password");
-  
+  Serial.println("[Setup] Successfull connected!");
+  Serial.print("[Setup] IP Address is: ");
+  Serial.println(WiFi.localIP());
+
   lc.shutdown(0,false);   // Enable display
-  lc.setIntensity(0,15);  // Set brightness level (0 is min, 15 is max)
+  lc.setIntensity(0,1);   // Set brightness level (0 is min, 15 is max)
   lc.clearDisplay(0);     // Clear display register
+  delay(1000);
 }
 
 void loop()
-{
- // wait for WiFi connection
-  if ((WiFiMulti.run() == WL_CONNECTED)) {
+{ 
+  if (WiFiMulti.run() == WL_CONNECTED) {
 
     std::unique_ptr<BearSSL::WiFiClientSecure>client(new BearSSL::WiFiClientSecure);
 
-    client->setInsecure();
+    client->setFingerprint(fingerprint);
+    //client->setInsecure();
 
     HTTPClient https;
 
-    Serial.print("[HTTPS] begin...\n");
     if (https.begin(*client, "https://www.worldometers.info/coronavirus/country/germany/")) {  // HTTPS
 
-      Serial.print("[HTTPS] GET...\n");
+      Serial.print("[HTTPS] GET Request\n");
       // start connection and send HTTP header
       int httpCode = https.GET();
 
@@ -57,12 +66,14 @@ void loop()
         if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
           String payload = https.getString();
           // parse for currently infected patients
-          int back = payload.indexOf("Currently Infected Patients");
-          int front = payload.indexOf("<div class=\"number-table-main\">", back - 80 );
-          String result = payload.substring(front + 31, back - 37);
+          int back = payload.indexOf("<div style=\"font-size:13.5px\">Currently Infected Patients");
+          int front = payload.indexOf("<div class=\"number-table-main\">", back - 120 );
+          String result = payload.substring(front + 31, back);
+
           result.replace(",", "");
           setDisplay(result.toInt());
-          Serial.printf("Currently Infected Patientse: %d\n", result);
+          Serial.print("[RESULT] Currently Infected Patiences: ");
+          Serial.println(result.toInt());
         }
       } else {
         Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
@@ -72,10 +83,13 @@ void loop()
     } else {
       Serial.printf("[HTTPS] Unable to connect\n");
     }
+  } else {
+    WiFi.mode(WIFI_STA);
+    WiFiMulti.addAP("ssid", "password");
   }
 
-  Serial.println("Wait 15min before next round...");
-  delay(900000);
+  Serial.println("[TIMER] 30s until  next request");
+  delay(30000);
 }
 void setDisplay(int number)
 {
