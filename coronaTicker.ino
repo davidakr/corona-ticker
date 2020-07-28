@@ -4,93 +4,108 @@
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecureBearSSL.h>
-
+#include <DNSServer.h>            
+#include <ESP8266WebServer.h>     
+#include <WiFiManager.h>
+#include <ArduinoJson.h>          
 
 // EasyESP or NodeMCU Pin D8 to DIN, D7 to Clk, D6 to LOAD, no.of devices is 1
-LedControl lc=LedControl(D8,D7,D6,1);
+LedControl lc = LedControl(D8,D7,D6,1);
 ESP8266WiFiMulti WiFiMulti;
+WiFiManager wifiManager;
 
-const char* ssid     = "ssid";
-const char* password = "password";
-const char* host = "worldometers.info";
-const uint8_t fingerprint[20] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+//const uint8_t fingerprint[20] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
+bool world = false;
+String country = "germany";
 
 void setup()
 {
   Serial.begin(115200);
-  WiFi.mode(WIFI_STA);
-  WiFiMulti.addAP(ssid, password);
-  delay(1000);
-
-  Serial.println();
-  Serial.print("[Setup] Connecting");
-  while (WiFiMulti.run() != WL_CONNECTED)
-  {
-    delay(500);
-  }
-
+  
+  wifiManager.autoConnect("CoronaTickerWifiSetup");
   Serial.println("[Setup] Successfull connected!");
   Serial.print("[Setup] IP Address is: ");
   Serial.println(WiFi.localIP());
 
   lc.shutdown(0,false);   // Enable display
-  lc.setIntensity(0,1);   // Set brightness level (0 is min, 15 is max)
+  lc.setIntensity(0,2);   // Set brightness level (0 is min, 15 is max)
   lc.clearDisplay(0);     // Clear display register
   delay(1000);
 }
 
 void loop()
 { 
-  if (WiFiMulti.run() == WL_CONNECTED) {
-
-    std::unique_ptr<BearSSL::WiFiClientSecure>client(new BearSSL::WiFiClientSecure);
-
-    client->setFingerprint(fingerprint);
-    //client->setInsecure();
-
-    HTTPClient https;
-
-    if (https.begin(*client, "https://www.worldometers.info/coronavirus/country/germany/")) {  // HTTPS
-
-      Serial.print("[HTTPS] GET Request\n");
-      // start connection and send HTTP header
-      int httpCode = https.GET();
-
-      // httpCode will be negative on error
-      if (httpCode > 0) {
-        // HTTP header has been send and Server response header has been handled
-        Serial.printf("[HTTPS] GET... code: %d\n", httpCode);
-
-        // file found at server
-        if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
-          String payload = https.getString();
-          // parse for currently infected patients
-          int back = payload.indexOf("<div style=\"font-size:13.5px\">Currently Infected Patients");
-          int front = payload.indexOf("<div class=\"number-table-main\">", back - 120 );
-          String result = payload.substring(front + 31, back);
-
-          result.replace(",", "");
-          setDisplay(result.toInt());
-          Serial.print("[RESULT] Currently Infected Patiences: ");
-          Serial.println(result.toInt());
-        }
-      } else {
-        Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
-      }
-
-      https.end();
+  int infected = 0;
+  while (infected == 0)
+  {
+    if (world) {
+      infected = getCurrentInfectedWorld();
     } else {
-      Serial.printf("[HTTPS] Unable to connect\n");
+      infected = getCurrentInfectedInCountry(country);
     }
-  } else {
-    WiFi.mode(WIFI_STA);
-    WiFiMulti.addAP("ssid", "password");
   }
 
-  Serial.println("[TIMER] 30s until  next request");
-  delay(30000);
+  setDisplay(infected);
+  String region = world ? "world" : country;
+  Serial.println("[RESULT] Active cases COVID-19 " + region + ": " + String(infected));
+  Serial.println("[TIMER] 1 hour until  next request");
+  delay(3600000);
 }
+
+int getCurrentInfectedWorld(){
+  return getCurrentInfectedInCountry("");
+}
+
+int getCurrentInfectedInCountry(String country){
+  std::unique_ptr<BearSSL::WiFiClientSecure>client(new BearSSL::WiFiClientSecure);
+
+  //client->setFingerprint(fingerprint);
+  client->setInsecure();
+
+  HTTPClient https;
+
+  String url;
+  if (country.isEmpty()){
+    url = "https://corona.lmao.ninja/v2/all?yesterday";
+  } else {
+    url = "https://corona.lmao.ninja/v2/countries/" + country + "?yesterday&strict&query%20";
+  }
+
+  if (https.begin(*client, url)) {  // HTTPS
+
+    Serial.print("[HTTPS] GET Request\n");
+    // start connection and send HTTP header
+    int httpCode = https.GET();
+
+    // httpCode will be negative on error
+    if (httpCode > 0) {
+      // HTTP header has been send and Server response header has been handled
+      Serial.printf("[HTTPS] GET... code: %d\n", httpCode);
+
+      // file found at server
+      if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+        String payload = https.getString();
+        // parse for currently infected patients
+        DynamicJsonDocument doc(1024);      
+        deserializeJson(doc, payload);
+        JsonObject obj = doc.as<JsonObject>();
+
+        String result = obj["active"];
+        return result.toInt();
+      }
+    } else {
+      Serial.printf("[HTTPS] GET... failed, error: %s\n", https.errorToString(httpCode).c_str());
+      return 0;
+    }
+
+    https.end();
+  } else {
+    Serial.printf("[HTTPS] Unable to connect\n");
+    return 0;
+  }
+}
+
 void setDisplay(int number)
 {
   if(number != 0) {
